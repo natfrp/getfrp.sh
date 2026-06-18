@@ -1,0 +1,68 @@
+name: Sync upstream launcher
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-launcher
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync launcher.sh to index.html
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+
+      - name: Fetch upstream launcher
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_REPO: natfrp/wiki
+          UPSTREAM_PATH: .vuepress/public/launcher.sh
+        run: |
+          set -euo pipefail
+
+          upstream_sha="$(gh api "/repos/${UPSTREAM_REPO}/commits?path=${UPSTREAM_PATH}&per_page=1" --jq '.[0].sha')"
+          if [[ -z "${upstream_sha}" || "${upstream_sha}" == "null" ]]; then
+            echo "Unable to determine upstream commit for ${UPSTREAM_REPO}/${UPSTREAM_PATH}" >&2
+            exit 1
+          fi
+
+          short_sha="${upstream_sha:0:8}"
+          gh api \
+            -H "Accept: application/vnd.github.raw" \
+            "/repos/${UPSTREAM_REPO}/contents/${UPSTREAM_PATH}?ref=${upstream_sha}" \
+            > index.html
+
+          echo "sha=${upstream_sha}" >> "${GITHUB_OUTPUT}"
+          echo "short_sha=${short_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check for changes
+        id: changes
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$(git status --porcelain -- index.html)" ]]; then
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "No changes to sync."
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Commit and push changes
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add index.html
+          git commit -m "Sync upstream ${{ steps.upstream.outputs.short_sha }}"
+          git push
