@@ -34,21 +34,21 @@ fi
 
 ask_for_creds() {
     while true; do
-        read -e -p "请输入 SakuraFrp 的访问密钥 (可在 https://www.natfrp.com/user/ 获取): " api_key
+        read -r -e -p "请输入 SakuraFrp 的访问密钥 (可在 https://www.natfrp.com/user/ 获取): " api_key
         echo
-        if [[ ${#api_key} -ge 16 ]]; then break; fi
+        if [[ "$api_key" =~ ^[a-z0-9]{16,}$ ]]; then break; fi
         log_E "访问密钥错误, 请到 https://www.natfrp.com/user/ 获取"
     done
 
     while true; do
         while true; do
-            read -e -p "请输入远程管理密码 (至少八个字符): " remote_pass
+            IFS= read -r -e -p "请输入远程管理密码 (至少八个字符): " remote_pass
             echo
-            if [[ ${#remote_pass} -ge 8 ]]; then break; fi
-            log_E "远程管理密码至少需要 8 字符"
+            if [[ ${#remote_pass} -ge 8 && "$remote_pass" != *[![:graph:]]* ]]; then break; fi
+            log_E "远程管理密码至少需要 8 个字符"
         done
 
-        read -e -p "请再次输入远程管理密码: " remote_pass_confirm
+        IFS= read -r -e -p "请再次输入远程管理密码: " remote_pass_confirm
         echo
         if [[ "$remote_pass" == "$remote_pass_confirm" ]]; then break; fi
         log_E "两次输入的远程管理密码不一致, 请确认知晓自己正在输入的内容"
@@ -68,21 +68,31 @@ press_enter() {
     read -p "按 Enter 键以继续, 或 Ctrl-C 取消..."
 }
 
+# The container runs as root; direct installs run as LOW_USER.
+prepare_config_dir() {
+    mkdir -p "$CONFIG_BASE"
+    chown -R "$1" "$CONFIG_BASE"
+    chmod 700 "$CONFIG_BASE"
+    if [[ -f "$CONFIG_BASE/config.json" ]]; then
+        chmod 600 "$CONFIG_BASE/config.json"
+    fi
+}
+
 # docker install should be the default, use podman only if necessary
 container_install() {
-    echo -e "\e[96m[*] 检测到 ${CONTAINER_RT}, 将使用容器安装模式\e[0m
+    echo -e "\e[96m[*] 检测到 $1, 将使用容器安装模式\e[0m
   - 将在您的系统上创建名为 natfrp-service 的容器
   - 将为您创建 ${CONFIG_BASE} 文件夹用于存储启动器配置文件\n"
     ask_for_creds
 
-    mkdir -p ${CONFIG_BASE} || log_W "无法创建 ${CONFIG_BASE} 文件夹, 配置可能无法在容器重启后正常保存"
+    prepare_config_dir 0:0
 
-    if ${CONTAINER_RT} ps -a --format '{{.Names}}' | grep -q '^natfrp-service$'; then
+    if "$1" ps -a --format '{{.Names}}' | grep -q '^natfrp-service$'; then
         log_W "已存在名为 natfrp-service 的容器"
         read -p " - 是否移除已存在的容器? [y/N] " -r choice
         if [[ $choice =~ ^[Yy]$ ]]; then
-            ${CONTAINER_RT} stop natfrp-service -t 5 &>/dev/null
-            ${CONTAINER_RT} rm natfrp-service
+            "$1" stop natfrp-service -t 5 &>/dev/null
+            "$1" rm natfrp-service
         else
             log_E "请手动移除已存在的容器后重新运行脚本"
             exit 1
@@ -106,7 +116,7 @@ container_install() {
         platform_flag="--platform linux/386"
     fi
 
-    ${CONTAINER_RT} run -d \
+    "$1" run -d \
         --network=host \
         --restart=always \
         --pull=always \
@@ -118,32 +128,14 @@ container_install() {
         -e "TZ=${TZ:-Asia/Shanghai}" \
         $image || \
     {
-        log_E "容器模式安装失败, 请检查 ${CONTAINER_RT} 是否正常运行以及是否能正常访问镜像"
+        log_E "容器模式安装失败, 请检查 $1 是否正常运行以及是否能正常访问镜像"
         exit 1
     }
 
-    if [[ $CONTAINER_RT == "podman" ]]; then
-        if ! command -v systemctl &>/dev/null || [[ ! -d /run/systemd/system ]]; then
-            log_W "未检测到 systemd, 请手动配置 Podman 容器开机自启"
-        elif ! systemctl is-enabled --quiet podman-restart.service; then
-            log_W "podman-restart.service 未启用, 容器可能无法在系统重启后自动启动"
-            read -p " - 是否启用 podman-restart.service 开机自启? [y/N] " -r choice
-            if [[ $choice =~ ^[Yy]$ ]]; then
-                if systemctl enable podman-restart.service; then
-                    log_I "已启用 podman-restart.service 开机自启"
-                else
-                    log_W "无法启用 podman-restart.service, 请手动检查服务配置"
-                fi
-            else
-                log_W "未启用开机自启, 系统重启后可能需要手动启动容器"
-            fi
-        fi
-    fi
-
     echo -e "\n\e[96m容器模式安装成功, 您可使用下面的命令管理服务:\e[0m
-  - 查看日志\t${CONTAINER_RT} logs natfrp-service
-  - 停止服务\t${CONTAINER_RT} stop natfrp-service
-  - 启动服务\t${CONTAINER_RT} start natfrp-service
+  - 查看日志\t$1 logs natfrp-service
+  - 停止服务\t$1 stop natfrp-service
+  - 启动服务\t$1 start natfrp-service
 \n请登录远程管理界面启动和管理隧道: https://www.natfrp.com/remote/v2
 请登录远程管理界面启动和管理隧道: https://www.natfrp.com/remote/v2
 请登录远程管理界面启动和管理隧道: https://www.natfrp.com/remote/v2
@@ -152,7 +144,7 @@ container_install() {
 
     log_I "输入回车键将开始输出启动器日志供您查看初步运行状态, 如需退出请按 Ctrl+C"
     read -p ""
-    ${CONTAINER_RT} logs -f natfrp-service
+    "$1" logs -f natfrp-service
 
     exit 0
 }
@@ -198,7 +190,7 @@ bareinstall_base() {
     check_executable "./natfrp-service"
 
     # Update config file
-    mkdir -p ${CONFIG_BASE} || log_W "无法创建 ${CONFIG_BASE} 文件夹, 配置文件夹可能已存在, 我们将尝试迁移"
+    prepare_config_dir "${LOW_USER}:"
 
     config_file="${CONFIG_BASE}/config.json"
     if [[ -f $config_file ]]; then
@@ -210,21 +202,25 @@ bareinstall_base() {
         fi
     fi
 
-    if [[ ! -f $config_file ]]; then
-        echo '{}' > $config_file
-    fi
-
-    jq --arg token "$api_key" \
-       --arg remote_key "$(./natfrp-service remote-kdf "$remote_pass")" \
-       '. + {
-         token: $token,
-         remote_management: true,
-         remote_management_key: $remote_key,
-         log_stdout: true
-       }' "$config_file" > "$config_file.tmp"
-    mv $config_file.tmp $config_file
-
-    chown -R ${LOW_USER}: ${CONFIG_BASE}
+    (
+        umask 077
+        if [[ ! -f "$config_file" ]]; then
+            echo '{}' > "$config_file"
+        fi
+        chown "${LOW_USER}:" "$config_file"
+        : > "$config_file.tmp"
+        chmod 600 "$config_file.tmp"
+        jq --arg token "$api_key" \
+           --arg remote_key "$(sudo -H -u "$LOW_USER" ./natfrp-service remote-kdf "$remote_pass")" \
+           '. + {
+             token: $token,
+             remote_management: true,
+             remote_management_key: $remote_key,
+             log_stdout: true
+           }' "$config_file" > "$config_file.tmp"
+        chown "${LOW_USER}:" "$config_file.tmp"
+        mv "$config_file.tmp" "$config_file"
+    )
 }
 
 bareinstall_systemd() {
@@ -290,6 +286,35 @@ EOF
     echo -e "\n\e[96mSakuraFrp 启动器文件安装完成, 您可以运行 bash /home/${LOW_USER}/start.sh 临时启动服务, 或配置到您喜爱的服务管理器中\e[0m"
 }
 
+is_direct_process() {
+    local executable
+    executable=$(readlink "/proc/$1/exe" 2>/dev/null) || return 1
+    executable="${executable% (deleted)}"
+    [[ "$executable" == "/home/${LOW_USER}/natfrp-service" || "$executable" == "/home/${LOW_USER}/frpc" ]]
+}
+
+stop_direct_processes() {
+    local entry pid
+    local pids=()
+    for entry in /proc/[0-9]*/exe; do
+        pid="${entry#/proc/}"
+        pid="${pid%/exe}"
+        if is_direct_process "$pid"; then
+            pids+=("$pid")
+            kill -TERM "$pid" 2>/dev/null
+        fi
+    done
+    if [[ ${#pids[@]} -gt 0 ]]; then
+        log_I "正在结束直接安装的启动器及 frpc 进程: ${pids[*]}"
+        sleep 5
+        for pid in "${pids[@]}"; do
+            if is_direct_process "$pid"; then
+                kill -KILL "$pid" 2>/dev/null
+            fi
+        done
+    fi
+}
+
 uninstall() {
     set +e
     read -p " - 确认要卸载 SakuraFrp 启动器吗? [y/N] " -r choice
@@ -311,6 +336,8 @@ uninstall() {
             systemctl daemon-reload &>/dev/null
         fi
 
+        stop_direct_processes
+
         if [[ -f /home/${LOW_USER}/natfrp-service ]]; then
             rm -rf /home/${LOW_USER}/frpc /home/${LOW_USER}/natfrp-service &>/dev/null && log_I "已删除 /home/${LOW_USER} 中的程序文件"
         fi
@@ -331,8 +358,10 @@ uninstall() {
             log_I "启动器数据未删除, 您可再次执行卸载脚本以删除"
         fi
         log_I "SakuraFrp 启动器已成功卸载"
+        return 0
     else
         log_I "SakuraFrp 启动器未被卸载"
+        return 1
     fi
 }
 
@@ -359,33 +388,48 @@ if [[ $1 == "uninstall" ]]; then
     exit 0
 fi
 
-# Reuse the runtime of an existing installation before selecting a new one.
+# Find any existing installation before selecting a runtime.
 known_install=""
-for rt in docker podman; do
-    if command -v "$rt" &>/dev/null && "$rt" ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^natfrp-service$'; then
-        known_install="$rt"
-        break
+check_installation() {
+    local rt names
+    local installs=()
+    for rt in docker podman; do
+        if ! command -v "$rt" &>/dev/null; then
+            continue
+        fi
+        if ! names=$("$rt" ps -a --format '{{.Names}}' 2>/dev/null); then
+            log_W "无法查询 $rt 中的已有安装, 请检查该运行时是否正常运行"
+            continue
+        fi
+        if grep -q '^natfrp-service$' <<< "$names"; then
+            installs+=("$rt")
+        fi
+    done
+
+    if [[ -f "/etc/systemd/system/natfrp.service" || -f "/home/${LOW_USER}/natfrp-service" ]]; then
+        installs+=("direct")
     fi
-done
 
-if [[ -z "$known_install" && ( -f /etc/systemd/system/natfrp.service || -f /home/${LOW_USER}/natfrp-service ) ]]; then
-    known_install="direct"
-fi
-
-if [[ -n "$known_install" ]]; then
-    if [[ -n "$1" && "$1" != "$known_install" ]]; then
-        log_E "检测到已有 $known_install 安装, 请先卸载后再切换为 $1"
-        exit 1
+    if [[ ${#installs[@]} -gt 0 ]]; then
+        log_I "检测到已有安装: ${installs[*]}"
+        if [[ ${#installs[@]} -gt 1 ]]; then
+            log_W "存在多种安装方式, 卸载操作会尝试移除全部已有安装"
+        fi
+        known_install="${installs[0]}"
+        return 0
     fi
-    log_I "检测到已有 $known_install 安装, 将更新 $known_install 部署"
-fi
 
-CONTAINER_RT=""
+    return 1
+}
+check_installation || :
+
+# Check the selected runtime before offering to remove an existing installation.
+crt=""
 case "${1:-$known_install}" in
     docker|podman)
         rt="${1:-$known_install}"
         if "$rt" info &>/dev/null; then
-            CONTAINER_RT="$rt"
+            crt="$rt"
         else
             log_E "$rt 不可用, 请检查它是否已安装并正常运行"
             exit 1
@@ -394,16 +438,54 @@ case "${1:-$known_install}" in
     direct) ;;
     *)
         if docker info &>/dev/null; then
-            CONTAINER_RT="docker"
+            crt="docker"
         elif podman info &>/dev/null; then
-            CONTAINER_RT="podman"
+            crt="podman"
         fi
         ;;
 esac
 
+if [[ -n "$known_install" ]]; then
+    if [[ -n "$1" && "$1" != "$known_install" ]]; then
+        log_W "检测到已有 $known_install 安装, 与指定的安装方式 $1 不符"
+        read -p " - 是否卸载已有安装并继续使用 $1 安装? [y/N] " -r choice
+        if [[ $choice =~ ^[Yy]$ ]]; then
+            log_W "卸载会中断所有隧道; 如果当前 SSH 通过隧道连接, 连接将断开, 后续安装可能无法继续"
+            if uninstall; then
+                set -e
+                known_install=""
+            else
+                exit 1
+            fi
+        else
+            exit 1
+        fi
+    else
+        log_I "检测到已有 $known_install 安装, 将更新 $known_install 部署"
+    fi
+fi
+
 # Use a container runtime (docker/podman) if available
-if [[ -n "$CONTAINER_RT" ]]; then
-    container_install
+if [[ -n "$crt" ]]; then
+    if [[ "$crt" == "podman" ]]; then
+        if ! command -v systemctl &>/dev/null || [[ ! -d /run/systemd/system ]]; then
+            log_W "未检测到 systemd, 请手动配置 Podman 开机自启"
+        elif ! systemctl is-enabled --quiet podman-restart.service; then
+            log_W "podman-restart.service 未启用, 容器可能无法在系统重启后自动启动"
+            read -p " - 是否启用 podman-restart.service 开机自启? [y/N] " -r choice
+            if [[ $choice =~ ^[Yy]$ ]]; then
+                if systemctl enable podman-restart.service; then
+                    log_I "已启用 podman-restart.service 开机自启"
+                else
+                    log_W "无法启用 podman-restart.service, 请手动检查服务配置"
+                fi
+            else
+                log_W "未启用开机自启, 系统重启后可能需要手动启动容器"
+            fi
+        fi
+    fi
+
+    container_install "$crt"
     exit 0
 fi
 
@@ -460,10 +542,17 @@ if [[ -f "/home/natfrp/.config/natfrp-service/config.json" && ${CONFIG_BASE} != 
     read -p " - 是否迁移配置文件? [y/N] " -r choice
     if [[ $choice =~ ^[Yy]$ ]]; then
         systemctl stop natfrp.service &>/dev/null || log_W "无法停止旧服务, 将尝试直接迁移"
-        mkdir -p ${CONFIG_BASE} || log_W "无法创建 ${CONFIG_BASE} 文件夹, 配置文件夹可能已存在, 我们将尝试迁移"
-        mv -f /home/natfrp/.config/natfrp-service/ ${CONFIG_BASE}/ || log_W "无法完整迁移旧配置文件, 数据迁移可能不完整"
-        chown -R ${LOW_USER}: ${CONFIG_BASE}
-        log_I "已迁移旧配置文件到 ${CONFIG_BASE} 目录"
+        prepare_config_dir 0:0
+        if (
+            shopt -s dotglob nullglob
+            mv -f /home/natfrp/.config/natfrp-service/* "$CONFIG_BASE/"
+        ); then
+            rmdir /home/natfrp/.config/natfrp-service 2>/dev/null || :
+            log_I "已迁移旧配置文件到 ${CONFIG_BASE} 目录"
+        else
+            log_W "无法完整迁移旧配置文件, 数据迁移可能不完整"
+        fi
+        prepare_config_dir 0:0
     fi
 fi
 
